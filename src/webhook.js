@@ -95,6 +95,8 @@ router.post('/2chat', async (req, res) => {
              : ev.message ? `message (from: ${ev.message?.from || ev.message?.sender?.phone || '?'})`
              : ev.event_name || 'desconhecido';
   console.log(`[webhook] POST recebido — ${tipo}`);
+  // PAYLOAD CRU pra diagnóstico — remover depois que estiver funcionando
+  console.log('[webhook] payload:', JSON.stringify(ev).slice(0, 1500));
 
   res.sendStatus(200);
 
