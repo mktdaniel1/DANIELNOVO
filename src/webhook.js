@@ -241,10 +241,16 @@ async function processarMensagem(event) {
   }
 
   // === NÃO CLASSIFICADO ===
-  // Não abre chamado nem altera SLA. Aparece na aba Contatos pra você classificar.
+  // Pra mensagens em GRUPO (@g.us): assume cliente (vem de alguém do grupo do cliente).
+  // Pra PRIVADO: só registra na aba Contatos pra classificação manual.
   if (origem === 'nao_classificado') {
     emitirContatoNovo({ contatoId, clienteId: cliente.id, clienteNome: cliente.nome });
-    return;
+    if (!ehGrupo) {
+      // privado de número desconhecido — não abre chamado, só registra
+      return;
+    }
+    // grupo: trata como cliente — segue pra lógica de classificar/abrir
+    origem = 'cliente';
   }
 
   // === CLIENTE ===
