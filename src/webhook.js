@@ -120,14 +120,52 @@ router.post('/2chat', async (req, res) => {
 // ============================================================
 async function processarMensagem(event) {
   const sessionKey = event.session_key;
-  const cliente = await findClienteBySessionKey(sessionKey);
-  if (!cliente) {
-    console.warn('[webhook] grupo não cadastrado:', sessionKey);
+  if (!sessionKey) {
+    console.warn('[webhook] sem session_key, ignorando');
     return;
   }
 
-  const msgUuid = event.message.uuid || event.message.id;
-  if (!msgUuid) return;
+  // Detecta privado (@c.us) vs grupo (@g.us)
+  const ehPrivado = sessionKey.endsWith('@c.us');
+  const ehGrupo = sessionKey.endsWith('@g.us');
+
+  let cliente = await findClienteBySessionKey(sessionKey);
+
+  // Auto-cadastra cliente se não existe — útil pra fase inicial
+  if (!cliente) {
+    const tipo = ehGrupo ? 'grupo' : 'individual';
+    const nome = ehPrivado
+      ? (event.contact?.friendly_name || event.contact?.first_name || event.remote_phone_number || 'Contato sem nome')
+      : `Grupo ${event.remote_phone_number || sessionKey.slice(-30)}`;
+
+    const remotePhone = event.remote_phone_number || null;
+
+    const insertCliente = await query(
+      `insert into clientes (nome, session_key, remote_phone_number, ativo)
+       values ($1, $2, $3, true)
+       on conflict (session_key) do nothing
+       returning id, nome`,
+      [nome, sessionKey, remotePhone]
+    );
+
+    if (insertCliente.rowCount > 0) {
+      cliente = insertCliente.rows[0];
+      console.log(`[webhook] cliente auto-cadastrado (${tipo}): ${nome}`);
+    } else {
+      cliente = await findClienteBySessionKey(sessionKey);
+      if (!cliente) {
+        console.warn('[webhook] falha ao auto-cadastrar cliente:', sessionKey);
+        return;
+      }
+    }
+  }
+
+  // UUID da mensagem: pode estar no nível raiz (event.id/uuid) ou dentro de message
+  const msgUuid = event.uuid || event.id || event.message?.uuid || event.message?.id;
+  if (!msgUuid) {
+    console.warn('[webhook] sem msgUuid, ignorando');
+    return;
+  }
 
   const existing = await query('select id from mensagens where msg_uuid = $1', [msgUuid]);
   if (existing.rowCount > 0) return;
@@ -401,6 +439,8 @@ function extrairRemetente(event) {
 
 function extrairRemetenteNome(event) {
   return (
+    event.contact?.friendly_name ||
+    event.contact?.first_name ||
     event.sender_name ||
     event.from_name ||
     event.message?.sender_name ||
