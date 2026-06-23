@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "migrate": "node src/migrate.js",
-    "subscribe": "node src/scripts/subscribe-webhooks.js"
+    "subscribe": "node src/scripts/subscribe-webhooks.js",
+    "diag": "node src/scripts/diag-2chat.js"
   },
   "engines": {
     "node": ">=20.0.0"
