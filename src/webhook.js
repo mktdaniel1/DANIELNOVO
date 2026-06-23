@@ -89,6 +89,13 @@ async function upsertContatoGrupo(contatoId, clienteId, enviadoEm) {
 // Endpoint do 2chat
 // ============================================================
 router.post('/2chat', async (req, res) => {
+  // Diagnóstico: confirma que o POST chegou e mostra o tipo
+  const ev = req.body || {};
+  const tipo = ev.reaction ? 'reaction'
+             : ev.message ? `message (from: ${ev.message?.from || ev.message?.sender?.phone || '?'})`
+             : ev.event_name || 'desconhecido';
+  console.log(`[webhook] POST recebido — ${tipo}`);
+
   res.sendStatus(200);
 
   try {
@@ -97,9 +104,12 @@ router.post('/2chat', async (req, res) => {
       await processarReacao(event);
     } else if (event.message) {
       await processarMensagem(event);
+    } else {
+      console.log('[webhook] payload sem message/reaction — keys:', Object.keys(ev).join(','));
     }
   } catch (err) {
-    console.error('[webhook] erro:', err);
+    console.error('[webhook] erro processando:', err.message);
+    console.error(err.stack);
   }
 });
 
