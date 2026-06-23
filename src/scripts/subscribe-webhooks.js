@@ -22,10 +22,15 @@ if (!ON_NUMBER) {
 const HOOK_URL = `${BASE.replace(/\/+$/, '')}/webhook/2chat`;
 
 // Eventos do 2chat que vamos assinar.
+// Doc: https://developers.2chat.co/docs/API/WhatsApp/Web/webhooks/subscribe
 const EVENTOS = [
+  // Mensagens em conversas privadas (1-a-1)
   'whatsapp.message.received',
   'whatsapp.message.sent',
-  'whatsapp.message.reaction'
+  'whatsapp.message.reaction',
+  // Mensagens em GRUPOS (essencial pra Growper — clientes estão nos grupos)
+  'whatsapp.group.message.received',
+  'whatsapp.group.message.reaction'
 ];
 
 async function subscribe(event) {
