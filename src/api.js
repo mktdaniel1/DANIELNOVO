@@ -6,6 +6,25 @@ import { enviarMensagem, reagirMensagem } from './twochat.js';
 
 const router = Router();
 
+// Endpoint PÚBLICO - usado pela tela de login pra mostrar o time
+// (sem expor telefones nem outros dados sensíveis)
+router.get('/contatos/funcionarios', async (req, res) => {
+  try {
+    const r = await query(`
+      select id, nome, setor, cargo,
+             (twochat_channel_phone is not null) as conectado
+      from contatos
+      where tipo = 'funcionario' and ativo = true
+      order by setor nulls last, nome
+    `);
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[api] funcionarios (publico) erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Todos os outros endpoints exigem token
 router.use((req, res, next) => {
   const token = req.header('X-CS-Token') || req.query.token;
   if (token !== process.env.CS_DASHBOARD_TOKEN) {
@@ -782,26 +801,6 @@ router.get('/chamados/:id', async (req, res) => {
 // ============================================================
 // FUNCIONÁRIOS — login e envio
 // ============================================================
-
-/**
- * GET /api/contatos/funcionarios
- * Lista os contatos classificados como funcionário (cards do login).
- */
-router.get('/contatos/funcionarios', async (req, res) => {
-  try {
-    const r = await query(`
-      select id, nome, telefone, setor, cargo, twochat_channel_phone,
-             (twochat_channel_phone is not null) as conectado
-      from contatos
-      where tipo = 'funcionario' and ativo = true
-      order by setor nulls last, nome
-    `);
-    res.json(r.rows);
-  } catch (err) {
-    console.error('[api] funcionarios erro:', err);
-    res.status(500).json({ error: 'internal' });
-  }
-});
 
 /**
  * PUT /api/contatos/:id/twochat-channel
