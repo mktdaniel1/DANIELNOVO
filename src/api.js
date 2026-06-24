@@ -909,6 +909,50 @@ router.put('/contatos/:id/twochat-channel', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/funcionarios/cadastro
+ * Usado pela página pública cadastro.html (link de cadastro do time).
+ * Requer X-CS-Token. Cria/atualiza um contato já como funcionário,
+ * usando o número de WhatsApp informado como telefone E como canal 2chat.
+ * body: { nome, setor, whatsapp, cargo? }
+ */
+router.post('/funcionarios/cadastro', async (req, res) => {
+  try {
+    const { nome, setor, whatsapp, cargo } = req.body;
+    if (!nome || !setor || !whatsapp) {
+      return res.status(400).json({ error: 'nome, setor e whatsapp são obrigatórios' });
+    }
+    if (!['cs', 'marketing', 'financeiro', 'suporte', 'outro'].includes(setor)) {
+      return res.status(400).json({ error: 'setor inválido' });
+    }
+    const tel = String(whatsapp).replace(/\D/g, '');
+    if (tel.length < 10) return res.status(400).json({ error: 'número de WhatsApp inválido' });
+
+    const r = await query(
+      `insert into contatos
+         (telefone, nome, tipo, setor, cargo, twochat_channel_phone, classificado_em, ultimo_visto, ativo)
+       values ($1, $2, 'funcionario', $3, $4, $1, now(), now(), true)
+       on conflict (telefone) do update set
+         nome = excluded.nome,
+         tipo = 'funcionario',
+         setor = excluded.setor,
+         cargo = coalesce(excluded.cargo, contatos.cargo),
+         twochat_channel_phone = excluded.twochat_channel_phone,
+         classificado_em = now(),
+         ativo = true
+       returning id, nome, setor, twochat_channel_phone`,
+      [tel, nome, setor, cargo || null]
+    );
+
+    invalidarCacheContato(tel);
+    emitirContatoClassificado({ contatoId: r.rows[0].id, tipo: 'funcionario' });
+    res.json({ ok: true, funcionario: r.rows[0] });
+  } catch (err) {
+    console.error('[api] cadastro funcionario erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 // ============================================================
 // MENSAGENS — envio pelo painel (usa número do funcionário logado)
 // ============================================================
