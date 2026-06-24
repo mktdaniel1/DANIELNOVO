@@ -422,9 +422,30 @@ router.get('/contatos/stats', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/contatos/funcionarios
+ * Lista os contatos classificados como funcionário (cards do login).
+ */
+router.get('/contatos/funcionarios', async (req, res) => {
+  try {
+    const r = await query(`
+      select id, nome, telefone, setor, cargo, twochat_channel_phone,
+             (twochat_channel_phone is not null) as conectado
+      from contatos
+      where tipo = 'funcionario' and ativo = true
+      order by setor nulls last, nome
+    `);
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[api] funcionarios erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 router.get('/contatos/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
+    if (!Number.isInteger(id)) return res.status(404).json({ error: 'não encontrado' });
     const r = await query(
       `select c.*,
               cl.nome as cliente_principal_nome,
@@ -869,25 +890,6 @@ router.get('/chamados/:id', async (req, res) => {
 // ============================================================
 // FUNCIONÁRIOS — login e envio
 // ============================================================
-
-/**
- * GET /api/contatos/funcionarios
- */
-router.get('/contatos/funcionarios', async (req, res) => {
-  try {
-    const r = await query(`
-      select id, nome, telefone, setor, cargo, twochat_channel_phone,
-             (twochat_channel_phone is not null) as conectado
-      from contatos
-      where tipo = 'funcionario' and ativo = true
-      order by setor nulls last, nome
-    `);
-    res.json(r.rows);
-  } catch (err) {
-    console.error('[api] funcionarios erro:', err);
-    res.status(500).json({ error: 'internal' });
-  }
-});
 
 /**
  * PUT /api/contatos/:id/twochat-channel
