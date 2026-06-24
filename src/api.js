@@ -7,6 +7,8 @@ import { enviarMensagem, reagirMensagem } from './twochat.js';
 const router = Router();
 
 router.use((req, res, next) => {
+  // rota pública: alimenta os cards da tela de login (antes do token)
+  if (req.path === '/contatos/funcionarios' && req.method === 'GET') return next();
   const token = req.header('X-CS-Token') || req.query.token;
   if (token !== process.env.CS_DASHBOARD_TOKEN) {
     return res.status(401).json({ error: 'unauthorized' });
