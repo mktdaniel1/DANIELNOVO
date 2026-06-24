@@ -143,6 +143,92 @@ router.get('/metrics/top-clientes', async (req, res) => {
 });
 
 // ============================================================
+// RELATÓRIO DE STATUS — Resolvido / Em tratativa / Não resolvido
+// ============================================================
+
+/**
+ * GET /api/metrics/status-report?period=hoje|semana|mes&group_by=total|consultor|squad
+ *  - "Em tratativa"  = estado ATUAL (abertos/em_atendimento agora), não filtra período.
+ *  - "Resolvido" / "Não resolvido" = fechados DENTRO do período.
+ *  - Atribuição por consultor/squad: quem fechou (fechado_por_id);
+ *    pros que seguem em tratativa, usa o primeiro responsável.
+ */
+router.get('/metrics/status-report', async (req, res) => {
+  try {
+    const period =
+      req.query.period === 'hoje'   ? 'current_date' :
+      req.query.period === 'semana' ? "date_trunc('week', current_date)" :
+                                      "date_trunc('month', current_date)";
+
+    const groupBy = ['consultor', 'squad'].includes(req.query.group_by)
+      ? req.query.group_by
+      : 'total';
+
+    if (groupBy === 'total') {
+      const r = await query(`
+        select
+          (select count(*) from chamados
+             where status in ('aberto','em_atendimento'))                              as em_tratativa,
+          (select count(*) from chamados
+             where status = 'resolvido' and fechado_em >= ${period})                   as resolvido,
+          (select count(*) from chamados
+             where status = 'nao_resolvido' and fechado_em >= ${period})               as nao_resolvido
+      `);
+      const row = r.rows[0];
+      const resolvido = Number(row.resolvido);
+      const naoResolvido = Number(row.nao_resolvido);
+      const fechados = resolvido + naoResolvido;
+      return res.json({
+        em_tratativa: Number(row.em_tratativa),
+        resolvido,
+        nao_resolvido: naoResolvido,
+        taxa_sucesso_pct: fechados ? Math.round((100 * resolvido) / fechados) : null
+      });
+    }
+
+    const dimensao = groupBy === 'squad' ? 'f.squad' : 'f.nome';
+
+    const r = await query(`
+      with base as (
+        select
+          c.status,
+          coalesce(c.fechado_por_id, c.primeiro_responsavel_id) as resp_id
+        from chamados c
+        where c.status in ('aberto','em_atendimento')
+           or (c.status in ('resolvido','nao_resolvido') and c.fechado_em >= ${period})
+      )
+      select
+        coalesce(${dimensao}, '— sem atribuição') as grupo,
+        count(*) filter (where b.status in ('aberto','em_atendimento')) as em_tratativa,
+        count(*) filter (where b.status = 'resolvido')                  as resolvido,
+        count(*) filter (where b.status = 'nao_resolvido')              as nao_resolvido
+      from base b
+      left join contatos f on f.id = b.resp_id
+      group by 1
+      order by resolvido desc, em_tratativa desc
+    `);
+
+    res.json(
+      r.rows.map((row) => {
+        const resolvido = Number(row.resolvido);
+        const naoResolvido = Number(row.nao_resolvido);
+        const fechados = resolvido + naoResolvido;
+        return {
+          grupo: row.grupo,
+          em_tratativa: Number(row.em_tratativa),
+          resolvido,
+          nao_resolvido: naoResolvido,
+          taxa_sucesso_pct: fechados ? Math.round((100 * resolvido) / fechados) : null
+        };
+      })
+    );
+  } catch (err) {
+    console.error('[api] status-report erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ============================================================
 // BACKLOG
 // ============================================================
 router.get('/backlog', async (req, res) => {
@@ -447,8 +533,6 @@ router.post('/contatos/:id/desclassificar', async (req, res) => {
 
 /**
  * GET /api/lembretes/ativos
- * Lembretes disparados que ainda não foram resolvidos + agendados pra breve.
- * Esses são os "alertas ativos" do topo do dashboard.
  */
 router.get('/lembretes/ativos', async (req, res) => {
   try {
@@ -490,7 +574,6 @@ router.get('/lembretes/ativos', async (req, res) => {
 
 /**
  * GET /api/lembretes/agendados-hoje
- * Conta lembretes manuais agendados pra hoje (pra KPI).
  */
 router.get('/lembretes/agendados-hoje', async (req, res) => {
   try {
@@ -509,7 +592,6 @@ router.get('/lembretes/agendados-hoje', async (req, res) => {
 
 /**
  * GET /api/chamados/:chamadoId/lembretes
- * Lembretes ativos de um chamado específico (pra mostrar no backlog).
  */
 router.get('/chamados/:chamadoId/lembretes', async (req, res) => {
   try {
@@ -532,8 +614,6 @@ router.get('/chamados/:chamadoId/lembretes', async (req, res) => {
 
 /**
  * POST /api/lembretes
- * Cria lembrete manual.
- * body: { chamado_id, disparar_em, texto, criado_por_nome }
  */
 router.post('/lembretes', async (req, res) => {
   try {
@@ -565,7 +645,6 @@ router.post('/lembretes', async (req, res) => {
 
 /**
  * POST /api/lembretes/:id/resolver
- * body: { resolucao: 'atendido' | 'adiado' | 'cancelado', adiar_para? }
  */
 router.post('/lembretes/:id/resolver', async (req, res) => {
   try {
@@ -610,8 +689,6 @@ router.post('/lembretes/:id/resolver', async (req, res) => {
 
 /**
  * PUT /api/chamados/:id/prioridade
- * Headers: X-CS-Funcionario-Id (quem definiu)
- * body: { prioridade: 'alta' | 'media' | 'baixa' | null }
  */
 router.put('/chamados/:id/prioridade', async (req, res) => {
   try {
@@ -640,25 +717,34 @@ router.put('/chamados/:id/prioridade', async (req, res) => {
 
 /**
  * POST /api/chamados/:id/fechar
- * Fecha o chamado direto pelo painel (sem precisar reagir com ✅ no WhatsApp).
- * Usado pelo botão "Resolver" no header do chat.
+ * Fecha o chamado pelo painel. Aceita desfecho explícito.
+ * body: { resultado: 'resolvido' | 'nao_resolvido' }  (default: 'resolvido')
+ * Headers: X-CS-Funcionario-Id  → grava fechado_por_id (quem resolveu)
  */
 router.post('/chamados/:id/fechar', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
+    const funcionarioId = parseInt(req.headers['x-cs-funcionario-id']) || null;
+    const resultado = req.body?.resultado === 'nao_resolvido' ? 'nao_resolvido' : 'resolvido';
+
     const r = await query(
       `update chamados
-       set status = 'resolvido', fechado_em = now(), metodo_fechamento = 'comando', aguardando_desde = null
-       where id = $1 and status in ('aberto','em_atendimento')
-       returning id, cliente_id`,
-      [id]
+         set status = $1,
+             fechado_em = now(),
+             metodo_fechamento = 'comando',
+             fechado_por_id = $2,
+             aguardando_desde = null
+       where id = $3 and status in ('aberto','em_atendimento')
+       returning id, cliente_id, status`,
+      [resultado, funcionarioId, id]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: 'chamado não encontrado ou já fechado' });
-    emitirChamadoFechado({ chamadoId: r.rows[0].id, clienteId: r.rows[0].cliente_id, status: 'resolvido' });
+    emitirChamadoFechado({ chamadoId: r.rows[0].id, clienteId: r.rows[0].cliente_id, status: r.rows[0].status });
     emitirBacklogAtualizado();
     emitirLembretesAtualizados();
     res.json({ ok: true, ...r.rows[0] });
   } catch (err) {
+    console.error('[api] fechar erro:', err);
     res.status(500).json({ error: 'internal' });
   }
 });
@@ -669,8 +755,6 @@ router.post('/chamados/:id/fechar', async (req, res) => {
 
 /**
  * GET /api/clientes/:id/mensagens?antes_de=ISO&limit=50
- * Histórico do grupo (todas as mensagens do cliente_id), paginado por timestamp.
- * `antes_de` opcional pra carregar mais ao rolar pra cima.
  */
 router.get('/clientes/:id/mensagens', async (req, res) => {
   try {
@@ -719,7 +803,6 @@ router.get('/clientes/:id/mensagens', async (req, res) => {
 
 /**
  * GET /api/chamados/ativos
- * Lista compacta de chamados em aberto/em_atendimento pra alimentar a aba Chamados.
  */
 router.get('/chamados/ativos', async (req, res) => {
   try {
@@ -787,7 +870,6 @@ router.get('/chamados/:id', async (req, res) => {
 
 /**
  * GET /api/contatos/funcionarios
- * Lista os contatos classificados como funcionário (cards do login).
  */
 router.get('/contatos/funcionarios', async (req, res) => {
   try {
@@ -807,8 +889,6 @@ router.get('/contatos/funcionarios', async (req, res) => {
 
 /**
  * PUT /api/contatos/:id/twochat-channel
- * body: { twochat_channel_phone, twochat_channel_uuid? }
- * Cadastra o número que esse funcionário usa pra responder via 2chat.
  */
 router.put('/contatos/:id/twochat-channel', async (req, res) => {
   try {
@@ -833,8 +913,6 @@ router.put('/contatos/:id/twochat-channel', async (req, res) => {
 
 /**
  * POST /api/mensagens/enviar
- * Headers: X-CS-Token (já validado pelo middleware) + X-CS-Funcionario-Id (id do funcionário)
- * body: { cliente_id, texto?, midia_url?, midia_tipo?, midia_nome?, reply_to_uuid?, reply_preview? }
  */
 router.post('/mensagens/enviar', async (req, res) => {
   try {
@@ -927,8 +1005,6 @@ router.post('/mensagens/enviar', async (req, res) => {
 
 /**
  * POST /api/mensagens/:uuid/reagir
- * Headers: X-CS-Funcionario-Id
- * body: { cliente_id, emoji }
  */
 router.post('/mensagens/:uuid/reagir', async (req, res) => {
   try {
