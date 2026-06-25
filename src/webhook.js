@@ -24,6 +24,26 @@ function ehBot(phone) {
   return n && BOT_NUMBERS.includes(n);
 }
 
+// Extrai o nome real do grupo a partir do payload do 2chat.
+// O nome verdadeiro vem em group.wa_group_name ou contact.friendly_name.
+function extrairNomeGrupo(event) {
+  const nome =
+    event.group?.wa_group_name ||
+    event.group?.wa_subject ||
+    event.contact?.friendly_name ||
+    null;
+  if (!nome) return null;
+  const limpo = String(nome).trim();
+  return limpo.length ? limpo : null;
+}
+
+// Um nome é "genérico/placeholder" se foi gerado pelo auto-cadastro antigo
+// ("Grupo XXXX") ou está vazio. Esses devem ser sobrescritos pelo nome real.
+function nomeEhGenerico(nome) {
+  if (!nome) return true;
+  return /^Grupo\s/i.test(nome.trim());
+}
+
 // ============================================================
 // Cache de contatos (telefone -> {id, tipo, setor, ...})
 // Invalida em 30s ou na chamada de classificação
@@ -129,14 +149,18 @@ async function processarMensagem(event) {
   const ehPrivado = sessionKey.endsWith('@c.us');
   const ehGrupo = sessionKey.endsWith('@g.us');
 
+  // Nome real do grupo (vem do payload do 2chat)
+  const nomeGrupoReal = extrairNomeGrupo(event);
+
   let cliente = await findClienteBySessionKey(sessionKey);
 
   // Auto-cadastra cliente se não existe — útil pra fase inicial
   if (!cliente) {
     const tipo = ehGrupo ? 'grupo' : 'individual';
+    // Usa o nome REAL do grupo se disponível; senão cai no genérico
     const nome = ehPrivado
       ? (event.contact?.friendly_name || event.contact?.first_name || event.remote_phone_number || 'Contato sem nome')
-      : `Grupo ${event.remote_phone_number || sessionKey.slice(-30)}`;
+      : (nomeGrupoReal || `Grupo ${event.remote_phone_number || sessionKey.slice(-30)}`);
 
     const remotePhone = event.remote_phone_number || null;
 
@@ -158,6 +182,11 @@ async function processarMensagem(event) {
         return;
       }
     }
+  } else if (ehGrupo && nomeGrupoReal && nomeEhGenerico(cliente.nome)) {
+    // Cliente já existe mas com nome genérico ("Grupo XXXX") — corrige com o nome real
+    await query('update clientes set nome = $1 where id = $2', [nomeGrupoReal, cliente.id]);
+    cliente.nome = nomeGrupoReal;
+    console.log(`[webhook] nome do grupo atualizado: ${nomeGrupoReal}`);
   }
 
   // UUID da mensagem: pode estar no nível raiz (event.id/uuid) ou dentro de message
