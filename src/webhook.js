@@ -463,6 +463,7 @@ function extrairReply(message) {
 
 function extrairRemetente(event) {
   return (
+    event.participant?.phone_number ||
     event.remote_phone_number_from_user ||
     event.from ||
     event.sender ||
@@ -473,13 +474,15 @@ function extrairRemetente(event) {
 }
 
 function extrairRemetenteNome(event) {
+  // participant.pushname = nome real de quem enviou (em grupo).
+  // NÃO usar contact.friendly_name aqui: em grupo, ele é o nome do GRUPO, não da pessoa.
   return (
-    event.contact?.friendly_name ||
-    event.contact?.first_name ||
+    event.participant?.pushname ||
     event.sender_name ||
     event.from_name ||
     event.message?.sender_name ||
     event.profile_name ||
+    (event.session_key?.endsWith('@c.us') ? (event.contact?.first_name || event.contact?.friendly_name) : null) ||
     null
   );
 }
