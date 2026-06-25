@@ -308,6 +308,29 @@ router.put('/clientes/:id/link-whatsapp', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/clientes/:id/tier
+ * CS define o tier do cliente. body: { tier } (bronze..superstar ou null pra limpar)
+ */
+router.put('/clientes/:id/tier', async (req, res) => {
+  try {
+    const { tier } = req.body;
+    const validos = ['bronze', 'prata', 'ouro', 'platina', 'diamante', 'superstar'];
+    if (tier !== null && !validos.includes(tier)) {
+      return res.status(400).json({ error: 'tier inválido' });
+    }
+    const r = await query(
+      'update clientes set tier = $1 where id = $2 returning id, nome, tier',
+      [tier || null, req.params.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'cliente não encontrado' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('[api] tier erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 router.get('/clientes', async (req, res) => {
   const r = await query('select id, nome, session_key, ativo from clientes order by nome');
   res.json(r.rows);
@@ -867,7 +890,7 @@ router.get('/chamados/ativos', async (req, res) => {
 router.get('/chamados/:id', async (req, res) => {
   try {
     const r = await query(
-      `select c.*, cl.nome as cliente_nome, cl.session_key, cl.remote_phone_number, cl.link_whatsapp,
+      `select c.*, cl.nome as cliente_nome, cl.session_key, cl.remote_phone_number, cl.link_whatsapp, cl.tier,
               ab.nome as contato_abertura_nome, ab.telefone as contato_abertura_telefone,
               ab.cargo as contato_abertura_cargo,
               resp.nome as responsavel_nome
