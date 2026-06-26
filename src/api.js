@@ -331,6 +331,45 @@ router.put('/clientes/:id/tier', async (req, res) => {
   }
 });
 
+// CSs e coordenadores válidos (lista fixa, editável aqui se o time mudar)
+const CS_VALIDOS = ['Bruna', 'Carol', 'Cat', 'Rodrigo'];
+const COORD_VALIDOS = ['Macedo', 'Matheus', 'Carol Ferreira'];
+
+/**
+ * PUT /api/clientes/:id/squad
+ * Define o CS e/ou coordenador responsável pelo cliente.
+ * body: { cs?, coordenador? }  (string da lista, ou null pra limpar)
+ * Envia só o campo que quer alterar; o outro é preservado.
+ */
+router.put('/clientes/:id/squad', async (req, res) => {
+  try {
+    const { cs, coordenador } = req.body;
+    if (cs !== undefined && cs !== null && !CS_VALIDOS.includes(cs)) {
+      return res.status(400).json({ error: 'CS inválido' });
+    }
+    if (coordenador !== undefined && coordenador !== null && !COORD_VALIDOS.includes(coordenador)) {
+      return res.status(400).json({ error: 'coordenador inválido' });
+    }
+    const r = await query(
+      `update clientes set
+         cs = case when $1::text = '__keep__' then cs else nullif($1, '__null__') end,
+         coordenador = case when $2::text = '__keep__' then coordenador else nullif($2, '__null__') end
+       where id = $3
+       returning id, nome, cs, coordenador`,
+      [
+        cs === undefined ? '__keep__' : (cs === null ? '__null__' : cs),
+        coordenador === undefined ? '__keep__' : (coordenador === null ? '__null__' : coordenador),
+        req.params.id
+      ]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'cliente não encontrado' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('[api] squad cliente erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
 router.get('/clientes', async (req, res) => {
   const r = await query('select id, nome, session_key, ativo from clientes order by nome');
   res.json(r.rows);
@@ -890,7 +929,7 @@ router.get('/chamados/ativos', async (req, res) => {
 router.get('/chamados/:id', async (req, res) => {
   try {
     const r = await query(
-      `select c.*, cl.nome as cliente_nome, cl.session_key, cl.remote_phone_number, cl.link_whatsapp, cl.tier,
+      `select c.*, cl.nome as cliente_nome, cl.session_key, cl.remote_phone_number, cl.link_whatsapp, cl.tier, cl.cs, cl.coordenador,
               ab.nome as contato_abertura_nome, ab.telefone as contato_abertura_telefone,
               ab.cargo as contato_abertura_cargo,
               resp.nome as responsavel_nome
