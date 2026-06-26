@@ -950,8 +950,11 @@ router.post('/funcionarios/cadastro', async (req, res) => {
     if (!['cs', 'marketing', 'financeiro', 'suporte', 'outro'].includes(setor)) {
       return res.status(400).json({ error: 'setor inválido' });
     }
-    const tel = String(whatsapp).replace(/\D/g, '');
+    let tel = String(whatsapp).replace(/\D/g, '');
     if (tel.length < 10) return res.status(400).json({ error: 'número de WhatsApp inválido' });
+    // Normaliza pro formato 2chat (55 + DDD + número). O WhatsApp manda sempre com 55.
+    // 10 ou 11 dígitos = DDD+número sem código do país → prefixa 55.
+    if (tel.length <= 11 && !tel.startsWith('55')) tel = '55' + tel;
 
     const r = await query(
       `insert into contatos
@@ -974,6 +977,152 @@ router.post('/funcionarios/cadastro', async (req, res) => {
     res.json({ ok: true, funcionario: r.rows[0] });
   } catch (err) {
     console.error('[api] cadastro funcionario erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ============================================================
+// SQUADS E PAPÉIS
+// ============================================================
+
+// Papéis válidos (espelham a constraint contatos_papel_check no banco)
+const PAPEIS_VALIDOS = ['analista', 'coord_cs', 'coord_performance', 'cs'];
+
+/**
+ * GET /api/funcionarios
+ * Lista todos os funcionários com squad e papel (pra tela admin).
+ */
+router.get('/funcionarios', async (req, res) => {
+  try {
+    const r = await query(
+      `select id, nome, telefone, setor, cargo, squad, papel,
+              twochat_channel_phone is not null as conectado
+       from contatos
+       where tipo = 'funcionario'
+       order by squad nulls last, nome`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[api] listar funcionarios erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+/**
+ * GET /api/squads
+ * Lista os squads distintos já cadastrados (pra popular selects/filtros).
+ */
+router.get('/squads', async (req, res) => {
+  try {
+    const r = await query(
+      `select squad, count(*)::int as total
+       from contatos
+       where tipo = 'funcionario' and squad is not null and squad <> ''
+       group by squad order by squad`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[api] listar squads erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+/**
+ * PUT /api/funcionarios/:id/squad
+ * Edição manual de squad e/ou papel de um funcionário.
+ * body: { squad?, papel? }
+ */
+router.put('/funcionarios/:id/squad', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id inválido' });
+    const { squad, papel } = req.body;
+
+    if (papel !== undefined && papel !== null && !PAPEIS_VALIDOS.includes(papel)) {
+      return res.status(400).json({ error: 'papel inválido' });
+    }
+
+    const r = await query(
+      `update contatos
+       set squad = coalesce($1, squad),
+           papel = coalesce($2, papel)
+       where id = $3 and tipo = 'funcionario'
+       returning id, nome, squad, papel`,
+      [squad ?? null, papel ?? null, id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'funcionário não encontrado' });
+    res.json({ ok: true, funcionario: r.rows[0] });
+  } catch (err) {
+    console.error('[api] atualizar squad erro:', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+/**
+ * POST /api/funcionarios/squad-upload
+ * Carga em massa de squad+papel via CSV (texto puro no body).
+ * body: { csv: "telefone,squad,papel\n5511...,Squad A,cs\n..." }
+ * Cruza pelo telefone (normalizado com 55). Só atualiza quem já é funcionário.
+ * Retorna relatório: atualizados, não encontrados, erros de papel.
+ */
+router.post('/funcionarios/squad-upload', async (req, res) => {
+  try {
+    const { csv } = req.body;
+    if (!csv || typeof csv !== 'string') {
+      return res.status(400).json({ error: 'csv (texto) obrigatório' });
+    }
+
+    const linhas = csv.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!linhas.length) return res.status(400).json({ error: 'csv vazio' });
+
+    // Detecta e descarta cabeçalho se a 1ª linha contém "telefone"
+    let inicio = 0;
+    if (/telefone/i.test(linhas[0])) inicio = 1;
+
+    const resultado = { atualizados: [], nao_encontrados: [], papel_invalido: [] };
+
+    for (let i = inicio; i < linhas.length; i++) {
+      // aceita vírgula ou ponto-e-vírgula como separador
+      const partes = linhas[i].split(/[,;]/).map(s => s.trim());
+      const [telRaw, squad, papelRaw] = partes;
+      if (!telRaw) continue;
+
+      let tel = String(telRaw).replace(/\D/g, '');
+      if (tel.length <= 11 && !tel.startsWith('55')) tel = '55' + tel;
+
+      const papel = (papelRaw || '').toLowerCase() || null;
+      if (papel && !PAPEIS_VALIDOS.includes(papel)) {
+        resultado.papel_invalido.push({ telefone: tel, papel: papelRaw });
+        continue;
+      }
+
+      const upd = await query(
+        `update contatos
+         set squad = coalesce($1, squad),
+             papel = coalesce($2, papel)
+         where telefone = $3 and tipo = 'funcionario'
+         returning id, nome, squad, papel`,
+        [squad || null, papel, tel]
+      );
+
+      if (upd.rowCount > 0) {
+        invalidarCacheContato(tel);
+        resultado.atualizados.push(upd.rows[0]);
+      } else {
+        resultado.nao_encontrados.push({ telefone: tel, squad, papel: papelRaw });
+      }
+    }
+
+    res.json({
+      ok: true,
+      total_linhas: linhas.length - inicio,
+      atualizados: resultado.atualizados.length,
+      nao_encontrados: resultado.nao_encontrados.length,
+      papel_invalido: resultado.papel_invalido.length,
+      detalhe: resultado
+    });
+  } catch (err) {
+    console.error('[api] squad-upload erro:', err);
     res.status(500).json({ error: 'internal' });
   }
 });
